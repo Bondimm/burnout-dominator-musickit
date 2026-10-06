@@ -191,10 +191,6 @@ new audio, its image no longer fits on a single-layer DVD (renaming, removing an
 - [Burnout Revenge MusicKit](https://github.com/Bondimm/burnout-revenge-musickit)
 - [Burnout 3: Takedown MusicKit](https://github.com/Bondimm/burnout3-takedown-musickit)
 
-## Thanks
-
-- Everyone who tested the Burnout Revenge MusicKit in the game and reported back — this kit is built on that work.
-
 ## Legal
 
 **Please read this before using or sharing anything made with MusicKit.**
