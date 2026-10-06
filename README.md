@@ -17,8 +17,8 @@ the original ones included.
 - Added songs get their own rows in the game's Song Manager (the original list has 36 rows).
 - The new image keeps the game's PCSX2 CRC (`8C9C76B4` / `8C9576B4` Europe, `8C9576A1` USA), so **PCSX2 still
   recognises the game and applies its patches** (widescreen etc.).
-<!-- TODO(user): after testing in PCSX2, add a line like "Tested in PCSX2: adding, replacing, renaming, removing and
-     reordering songs with the Europe and USA versions." -->
+- **Tested in PCSX2** with the Europe English version: added songs appear in the EA TRAX list after the original
+  36, play in menus and races and show up in the EA TRAX pop-up.
 
 ---
 
@@ -41,13 +41,11 @@ DVD (4.7 GB) — calculated from *your* image. If it would not fit, you see a wa
 [FAQ](#faq)).
 
 ### Step 5 — Play
-Load the new `.iso` in PCSX2 (or burn it / run it on your PS2) and open the **EA TRAX** screen (Song Manager) from
-the game's menus.
+Load the new `.iso` in PCSX2 (or burn it / run it on your PS2) and open **SETTINGS → EA TRAX**.
 
-<!-- TODO(user): add an in-game screenshot here (PCSX2, Song Manager with the added songs and the EA TRAX pop-up):
-     save it as docs/images/step5_in_game.png and uncomment the next line.
-![Step 5 - your songs in the game](docs/images/step5_in_game.png)
--->
+![Step 5 - your songs in the EA TRAX list](docs/images/step5_in_game.png)
+
+![Step 5 - your songs in a race](docs/images/step5_in_race.png)
 
 ---
 
