@@ -234,10 +234,11 @@ cannot be burned to a normal DVD for a real PS2 — remove or shorten songs unti
 to burn it. The 5-language Europe disc (`SLES-54627`) is already almost full: as soon as you add a song or give one
 new audio, its image no longer fits on a single-layer DVD (renaming, removing and reordering still fit).
 
-## Other Burnout MusicKits
+## Other Burnout kits
 
-- [Burnout Revenge MusicKit](https://github.com/Bondimm/burnout-revenge-musickit)
-- [Burnout 3: Takedown MusicKit](https://github.com/Bondimm/burnout3-takedown-musickit)
+- [Burnout Revenge MusicKit](https://github.com/Bondimm/burnout-revenge-musickit) — add, replace, rename, remove and reorder the EA Trax songs of Burnout Revenge (PS2).
+- [Burnout 3: Takedown MusicKit](https://github.com/Bondimm/burnout3-takedown-musickit) — the same for Burnout 3: Takedown (PS2).
+- [Burnout Revenge ChainKit](https://github.com/Bondimm/burnout-revenge-chainkit) — Burnout Dominator's supercharge and Burnout chain for Burnout Revenge (PS2).
 
 ## Legal
 
