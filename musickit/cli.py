@@ -11,10 +11,15 @@
   musickit remove-song <n> [--iso X]             remove song n from the disc (originals too)
   musickit move <n> <up|down|position> [--iso X] move song n
   musickit reset [--project P]                   forget all pending changes
-  musickit build [--iso X] [--out Y] [--project P] [--no-normalize]
+  musickit build [--iso X] [--out Y | --folder F [--gtfshost-from R]] [--project P] [--no-normalize]
+                                                 --folder: save into a game folder for PCSX2's Host Filesystem
+                                                 instead of a new ISO (see README, "PCSX2 HostFS folder");
+                                                 --gtfshost-from: your Burnout Revenge ISO, to copy
+                                                 IOP/GTFSHOST.IRX from (Dominator's disc has none)
   musickit export <n> <out.wav> [--iso X]        decode an existing song to WAV
-  musickit validate <source.iso> <output.iso>    check an output image against its source
+  musickit validate <source.iso> <output>        check an output image (or HostFS folder) against its source
 Song numbers n refer to the pending list shown by `queue` (the same as `list` until something changed).
+--iso also takes a HostFS game folder made by MusicKit: it is then saved into itself (build --folder <same folder>).
 """
 import argparse
 import json
@@ -126,6 +131,8 @@ def main(argv=None):
         sub.choices[name].add_argument("--iso"); sub.choices[name].add_argument("--project", default=DEFAULT_PROJECT)
     p = sub.add_parser("reset"); p.add_argument("--project", default=DEFAULT_PROJECT)
     p = sub.add_parser("build"); p.add_argument("--iso"); p.add_argument("--out"); p.add_argument("--project", default=DEFAULT_PROJECT)
+    p.add_argument("--folder", help="save into this PCSX2 HostFS game folder instead of a new ISO")
+    p.add_argument("--gtfshost-from", help="your Burnout Revenge ISO: copy IOP/GTFSHOST.IRX from it into the folder")
     p.add_argument("--no-normalize", action="store_true")
     p = sub.add_parser("validate"); p.add_argument("source"); p.add_argument("output")
     p = sub.add_parser("export"); p.add_argument("n", type=int); p.add_argument("out"); p.add_argument("--iso")
@@ -249,17 +256,35 @@ def main(argv=None):
     if a.cmd == "build":
         j = load_project(a.project)
         src = a.iso or j["iso"]
-        out = a.out or core.default_output(src)
+        if a.out and a.folder:
+            raise SystemExit("give --out (new ISO) or --folder (HostFS folder), not both")
         d = core.Disc(src)
+        folder = a.folder or (src if d.is_folder else None)
+        out = a.out or (None if folder else core.default_output(src))
         items = pending(j, d)
         if d.is_unchanged(items):
             raise SystemExit("nothing to do: add, replace, edit, remove or move songs first")
         w = d.save_warning(items)
         if w:
             print("! " + w)
-        size = d.size_plan(items)
-        print(("" if size["fits"] else "! ") + size["text"])
-        rep = d.build_list(items, out, normalize=not a.no_normalize, progress=_progress)
+        if folder:
+            problem = d.check_folder(folder)
+            if problem:
+                raise SystemExit(problem)
+            plan = d.folder_plan(folder)
+            if plan["extract_bytes"]:
+                print("the game's files are copied into the folder first (%.2f GB)" % (plan["extract_bytes"] / 1e9))
+            if a.gtfshost_from:
+                try:
+                    core.gtfshost_from(a.gtfshost_from)
+                except Exception as exc:
+                    raise SystemExit("--gtfshost-from: %s" % exc)
+            rep = d.build_folder(items, folder, normalize=not a.no_normalize, progress=_progress,
+                                 gtfshost_iso=a.gtfshost_from)
+        else:
+            size = d.size_plan(items)
+            print(("" if size["fits"] else "! ") + size["text"])
+            rep = d.build_list(items, out, normalize=not a.no_normalize, progress=_progress)
         print()
         if "target_lufs" in rep:
             print("target loudness %.1f LUFS (median of the original songs)" % rep["target_lufs"])
@@ -268,10 +293,23 @@ def main(argv=None):
                 s["index"] + 1, s["title"], " (new audio)" if s.get("replaced") else "", s["seconds"],
                 "%.1f" % s["input_lufs"] if s["input_lufs"] is not None else "-",
                 "%.1f" % s["output_lufs"] if s["output_lufs"] is not None else "-", s["bytes"] // 1024))
+        if folder:
+            print("saved into %s (%d songs): %s" % (folder, rep["total_songs"],
+                                                   ", ".join(p.lstrip("/") for p in rep["written"]) or "no file changed"))
+            print("boot image:", rep["boot_iso"])
+            if rep.get("gtfshost_missing"):
+                print("! IOP/GTFSHOST.IRX is missing in the folder: the game cannot start from it. Save again with "
+                      "--gtfshost-from <your Burnout Revenge ISO>.")
+            print("Play it in PCSX2:")
+            for line in d.hostfs_steps(folder):
+                print("  " + line)
+            return 0
         print("wrote", out, "(%d songs)" % rep["total_songs"])
         return 0
     if a.cmd == "validate":
         from . import validate
+        if os.path.isdir(a.output):
+            return 0 if validate.validate_folder(a.source, a.output) else 1
         return 0 if validate.validate(a.source, a.output) else 1
     if a.cmd == "export":
         import soundfile as sf
