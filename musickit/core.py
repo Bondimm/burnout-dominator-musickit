@@ -20,7 +20,7 @@ import tempfile
 
 import numpy as np
 
-from . import audio, elfpatch, iso, rws, strtable
+from . import audio, elfpatch, hostfs, iso, rws, strtable
 
 GAME = "Burnout Dominator"
 LANGS = ("UK", "FR", "GE", "SP", "IT", "US")     # all string tables MusicKit knows (a disc has a subset)
@@ -41,6 +41,11 @@ DVD5_SECTORS = 2295104   # single-layer DVD (4,700,372,992 bytes)
 ADPCM_BYTES_PER_SEC = 32000 * 2 * 16 / 28    # stereo PS-ADPCM at 32 kHz (~36.6 KB/s)
 TYPICAL_SONG_SECONDS = 210
 DEFAULT_ISO = ""  # no default: the user picks their own disc image
+NAHELAM_DIR = "Burnout Dominator"  # folder of the HostFS cheats for this game in Nahelam's repository
+# Burnout Dominator's disc has no IOP/GTFSHOST.IRX, the module the HostFS cheat loads; Burnout Revenge's works
+# (Nahelam). MusicKit copies it from the user's own Burnout Revenge disc image, it never ships it.
+GTFSHOST = "/IOP/GTFSHOST.IRX"
+REVENGE_ELFS = ("SLES_535.07", "SLES_535.06", "SLUS_212.42", "SLAJ_250.66", "SLKA_253.04", "SLPM_661.08")
 CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
 
 
@@ -54,6 +59,44 @@ def default_output(src):
     if base.endswith(" (MusicKit)"):
         return base + ext
     return base + " (MusicKit)" + (ext or ".iso")
+
+
+def default_folder(src):
+    """Suggested HostFS folder for the ISO `src`: next to it, "<iso name> (HostFS)"."""
+    base = os.path.splitext(os.path.abspath(src))[0]
+    if base.endswith(" (MusicKit)"):
+        base = base[:-len(" (MusicKit)")]
+    return base + " (HostFS)"
+
+
+def gtfshost_from(revenge_iso):
+    """IOP/GTFSHOST.IRX read from a Burnout Revenge disc image (ValueError if it is not one)."""
+    img = iso.IsoImage(revenge_iso)
+    try:
+        elf = hostfs.boot_elf(img.read_file("/SYSTEM.CNF")) if "/SYSTEM.CNF" in img.entries else None
+        if not elf or elf.strip("/") not in REVENGE_ELFS:
+            raise ValueError("not a Burnout Revenge disc image (%s)" % (elf or "no SYSTEM.CNF").strip("/"))
+        if GTFSHOST not in img.entries:
+            raise ValueError("IOP/GTFSHOST.IRX not found on this Burnout Revenge disc image")
+        return img.read_file(GTFSHOST)
+    finally:
+        img.f.close()
+
+
+def has_gtfshost(folder):
+    return hostfs.is_game_folder(folder) and GTFSHOST in hostfs.FolderImage(folder).entries
+
+
+def open_image(path):
+    """The disc image (iso.IsoImage) or HostFS game folder (hostfs.FolderImage) at `path`."""
+    if os.path.isdir(path):
+        return hostfs.FolderImage(path)
+    return iso.IsoImage(path)
+
+
+def span(img, path):
+    """(file on this computer, byte offset) of the disc file `path` in a disc image or game folder."""
+    return img.span(path) if getattr(img, "is_folder", False) else hostfs.iso_span(img, path)
 
 
 class Song:
@@ -146,7 +189,8 @@ class NewSong:
 class Disc:
     def __init__(self, path):
         self.path = path
-        self.img = iso.IsoImage(path)
+        self.img = open_image(path)
+        self.is_folder = getattr(self.img, "is_folder", False)
         self.elf_path = self._boot_elf()
         for p in (self.elf_path,) + RWS_FILES:
             if p not in self.img.entries:
@@ -211,7 +255,7 @@ class Disc:
 
     def reference_loudness(self, progress=None):
         """Median integrated loudness of the original songs (cached per image)."""
-        st = os.stat(self.path)
+        st = os.stat(span(self.img, RWS_FILES[0])[0] if self.is_folder else self.path)
         key = "%s|%d|%d" % (os.path.basename(self.path), st.st_size, int(st.st_mtime))
         cache = os.path.join(CACHE_DIR, "loudness.json")
         try:
@@ -286,6 +330,8 @@ class Disc:
         """Write a new ISO whose songs are `items` in this order: SongRef (a song of this disc, optionally with
         new audio / names) or NewSong (added). Returns a report dict."""
         prog = progress or (lambda f, m: None)
+        if self.is_folder:
+            raise ValueError("a HostFS folder is saved into itself (build_folder), not as a new ISO")
         if os.path.abspath(out_path) == os.path.abspath(self.path):
             raise ValueError("the output must be a new file (the source ISO is never modified)")
         reps, report = self.replacements(items, normalize, prog)
@@ -338,8 +384,8 @@ class Disc:
                 s = self.songs[it.src]
                 hdr = self.headers[s.rws_index]
                 seg = hdr.segments[s.segment]
-                e = self.img.entries[RWS_FILES[s.rws_index]]
-                src = (self.path, e.lsn * iso.SECTOR + hdr.segment_file_offset(seg), seg.size)
+                host, base = span(self.img, RWS_FILES[s.rws_index])
+                src = (host, base + hdr.segment_file_offset(seg), seg.size)
                 segs.append((src, seg.size, seg.usable, seg.uuid, seg.info))
         # 2. stream files (a file whose songs did not change is kept as it is)
         prog(0.5, "building stream files")
@@ -402,7 +448,9 @@ class Disc:
 
     def size_plan(self, items, estimate=None):
         """Projected output image for the song list `items` without encoding anything:
-        {"bytes", "sectors", "fits" (single-layer DVD), "room_bytes", "text"}."""
+        {"bytes", "sectors", "fits" (single-layer DVD), "room_bytes", "text"}. None for a HostFS folder."""
+        if self.is_folder:
+            return None
         size = self._planned_bytes(items, estimate)
         room = DVD5_SECTORS * iso.SECTOR - size
         # room for more music: one more (1 s) song may also move a stream file to the end of the disc
@@ -420,6 +468,95 @@ class Disc:
             return self.img.volume_sectors * iso.SECTOR
         reps, _ = self.replacements(items, normalize=False, estimate=estimate or {})
         return self.img.plan({k: len(v) for k, v in reps.items()})[1] * iso.SECTOR
+
+    # ------------------------------------------------------------------ HostFS folder
+    def check_folder(self, folder):
+        """Why `folder` cannot receive this disc (None if it can): a game folder of another game / version, a
+        folder with other files, or (for a folder opened as the source) any other folder than itself."""
+        folder = os.path.abspath(folder)
+        if self.is_folder:
+            if os.path.normcase(folder) != os.path.normcase(os.path.abspath(self.path)):
+                return "an opened folder is saved into itself (to fill another folder, open your ISO)"
+            return None
+        if os.path.isfile(folder):
+            return "this is a file - choose a folder"
+        if os.path.isdir(folder) and os.listdir(folder):
+            if not hostfs.is_game_folder(folder):
+                return "this folder has other files: choose an empty folder or a folder with the game's files"
+            try:
+                img = hostfs.FolderImage(folder)
+                elf = hostfs.boot_elf(img.read_file("/SYSTEM.CNF"))
+                if elf != self.elf_path:
+                    return "this folder has another game or version (%s, not %s)" % (
+                        (elf or "?").strip("/"), self.elf_path.strip("/"))
+                if elf in img.entries and elfpatch.crc(img.read_file(elf)) != self.crc:
+                    return "the game executable in this folder was changed by another tool (other PCSX2 CRC)"
+            except Exception as exc:
+                return "cannot read this folder: %s" % exc
+        return None
+
+    def folder_plan(self, folder):
+        """{"extract_bytes": bytes still to copy from the ISO into `folder`, "has_game": it has the game already}."""
+        folder = os.path.abspath(folder)
+        if self.is_folder:
+            return {"extract_bytes": 0, "has_game": True, "gtfshost": has_gtfshost(folder)}
+        if not os.path.isdir(folder):
+            return {"extract_bytes": sum(e.size for e in self.img.entries.values()), "has_game": False,
+                    "gtfshost": False}
+        return {"extract_bytes": hostfs.needed_bytes(self.img, folder), "has_game": hostfs.is_game_folder(folder),
+                "gtfshost": has_gtfshost(folder)}
+
+    def build_folder(self, items, folder, normalize=True, progress=None, gtfshost_iso=None):
+        """Save the song list `items` into the HostFS game folder `folder` (see hostfs.py). From an ISO the game's
+        files are extracted first (missing files only), then the changed files are written and the boot image
+        "<game> (HostFS).iso" is rebuilt; every file MusicKit manages ends up exactly as in a new ISO built from
+        the same source. A folder opened as the source is saved into itself. gtfshost_iso: your Burnout Revenge
+        ISO, to copy IOP/GTFSHOST.IRX from when the folder has none (report "gtfshost_missing" otherwise).
+        Returns a report dict."""
+        prog = progress or (lambda f, m: None)
+        folder = os.path.abspath(folder)
+        problem = self.check_folder(folder)
+        if problem:
+            raise ValueError(problem)
+        boot = hostfs.boot_iso_path(folder, GAME)
+        if os.path.isdir(folder):          # refuse before encoding when the game is running
+            fimg = hostfs.FolderImage(folder) if hostfs.is_game_folder(folder) else None
+            hostfs.check_unlocked([boot] + [hostfs.host_path(folder, p, fimg) for p in sorted(self.changed_paths)])
+        irx = gtfshost_from(gtfshost_iso) if gtfshost_iso and not has_gtfshost(folder) else None
+        reps, report = self.replacements(items, normalize, lambda f, m: prog(0.6 * f, m))
+        if not self.is_folder:
+            hostfs.extract(self.img, folder, lambda f, m: prog(0.6 + 0.25 * f, m), skip=reps)
+            # files MusicKit manages that this song list leaves unchanged: as on the source ISO
+            fimg = hostfs.FolderImage(folder)
+            for p in sorted(self.changed_paths):
+                if p in reps:
+                    continue
+                e, fe = self.img.entries[p], fimg.entries[p]
+                if fe.size != e.size or not hostfs.same_file(self.path, e.lsn * iso.SECTOR, fe.host, 0, e.size):
+                    reps[p] = (self.path, e.lsn * iso.SECTOR, e.size)
+        if irx is not None and not has_gtfshost(folder):
+            reps[GTFSHOST] = irx
+        written = hostfs.write_files(folder, reps, lambda f, m: prog(0.85 + 0.13 * f, m), extra_locked=[boot])
+        report["gtfshost_missing"] = not has_gtfshost(folder)
+        prog(0.99, "writing the boot image")
+        report["boot_iso"] = hostfs.write_boot_iso(folder, GAME)
+        report["folder"] = folder
+        report["written"] = sorted(written)
+        prog(1.0, "done")
+        return report
+
+    def hostfs_steps(self, folder=None):
+        """How to play the folder in PCSX2 (numbered steps)."""
+        steps = hostfs.instructions(GAME, NAHELAM_DIR, self.elf_path, self.crc, folder)
+        if folder and not has_gtfshost(folder):
+            steps.append("! The folder still needs IOP/GTFSHOST.IRX from your Burnout Revenge disc (Dominator's disc "
+                         "has none): choose your Burnout Revenge ISO and save again.")
+        return steps
+
+    def close(self):
+        f = getattr(self.img, "f", None)
+        if f:
+            f.close()
 
     def _boot_elf(self):
         try:
