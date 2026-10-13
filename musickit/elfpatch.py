@@ -466,6 +466,12 @@ def touched_ranges(data):
     return r
 
 
+def own_ranges(data):
+    """Address ranges whose bytes MusicKit itself may have changed in this executable - everything else must be as
+    on the disc."""
+    return touched_ranges(data)
+
+
 # Signatures of the EU groups ([value, mask] per word), generated from SLES_546.81 by gen_signatures() into
 # signatures.json: "original" for unpatched executables, "patched" to find the groups again in MusicKit output.
 def _mask_of(w):
