@@ -151,6 +151,72 @@ def test_default_off_follows_songs():
         assert elfpatch.read_default_off(again) == {4: 3, 5: None, 6: None, 7: 7}
 
 
+def test_shuffle_list_room():
+    """The shuffle order list (one byte per song) must not run into other music manager fields or the song table."""
+    assert elfpatch.manager_overlap(elfpatch.MANAGER_SHUFFLE, 50) == []
+    # the list kept in the manager is too small for more songs: from 51 songs on it overwrites the shuffle position,
+    # then the shuffle song count, the stream file name and the playlist copy
+    assert elfpatch.manager_overlap(elfpatch.MANAGER_SHUFFLE, 51) == ["shuffle position"]
+    assert len(elfpatch.manager_overlap(elfpatch.MANAGER_SHUFFLE, elfpatch.MAX_SONGS)) == 4
+    # moved list: after the song table (100 entries: images from older versions) and its spare slot
+    assert max(100, elfpatch.SINK + 1) * 12 <= elfpatch.SHUFFLE_OFFSET
+    assert elfpatch.MAX_SONGS <= min(elfpatch.SHUFFLE_SIZE, 256)
+
+
+def test_shuffle_list_moved():
+    for name, d, crc, playlist, table, profile in _vers():
+        assert elfpatch.shuffle_list(d) == ("manager", elfpatch.MANAGER_SHUFFLE)
+        out = elfpatch.set_table(d, [7] * elfpatch.MAX_SONGS)
+        lay = elfpatch.Layout(out)
+        assert elfpatch.shuffle_list(out) == ("hole", table + elfpatch.SHUFFLE_OFFSET), name
+        assert lay.shuffle + elfpatch.SHUFFLE_SIZE <= lay.hole_end
+        # no list access through the manager pointer is left in the shuffle functions (byte load / store at +0x0E)
+        for g in ("shuffle_fill", "shuffle_next"):
+            a, b = elfpatch.EU_GROUPS[g]
+            words = [lay.elf.r32(va + lay.delta[g]) for va in range(a, b, 4)]
+            assert not [w for w in words if w >> 26 in (0x20, 0x24, 0x28) and w & 0xFFFF == 0x0E], (name, g)
+        # an executable patched by an older MusicKit version (list still in the manager) is caught and upgraded
+        e, o = elfpatch.Elf(out), elfpatch.Elf(d)
+        for va, eu, _, _ in lay.sites():
+            if eu in elfpatch.SHUFFLE_SITES:
+                e.w32(va, o.r32(va))
+        old = elfpatch._fix_crc(e.d, crc, appended=True)
+        assert elfpatch.shuffle_list(old) == ("manager", elfpatch.MANAGER_SHUFFLE)
+        assert elfpatch.manager_overlap(elfpatch.MANAGER_SHUFFLE, elfpatch.read_song_count(old))
+        up = elfpatch.set_table(old, [7] * elfpatch.MAX_SONGS)
+        assert elfpatch.shuffle_list(up) == ("hole", lay.shuffle) and elfpatch.crc(up) == crc and up == out, name
+
+
+def _cheat_ranges():
+    """Addresses written by public PCSX2 patches (pcsx2_patches) and Nahelam's HostFS patches, as [start, end)
+    ranges per PCSX2 CRC (validate.PNACH lists written words)."""
+    from musickit import validate
+    return {c: [(a, a + 4) for addrs in cheats.values() for a in addrs] for c, cheats in validate.PNACH.items()}
+
+
+def _overlaps(a, b):
+    return [(hex(lo), hex(hi)) for lo, hi in a for x, y in b if lo < y and x < hi]
+
+
+def test_no_overlap_with_pcsx2_patches_static():
+    """Europe executable, from the address lists alone (no disc needed): every code word MusicKit can write, the
+    playlist words, the song table and the shuffle list."""
+    playlist, table = 0x3CF310, 0x404080
+    ours = [(eu, eu + 4) for eu, _, t, _ in elfpatch.CODE_PATCHES if t is not None]
+    ours += [(eu, eu + 4) for eu, _, _ in elfpatch.ROW_SITES] + [(eu, eu + 4) for eu, _ in elfpatch.DEFAULT_OFF_SITES]
+    ours += [(playlist + 4, playlist + 8), (playlist + 0x4C, playlist + 0x50), (table, table + 100 * 12),
+             (table + elfpatch.SHUFFLE_OFFSET, table + elfpatch.SHUFFLE_OFFSET + elfpatch.SHUFFLE_SIZE)]
+    for crc, ranges in _cheat_ranges().items():
+        assert _overlaps(ours, ranges) == [], hex(crc)
+
+
+def test_no_overlap_with_pcsx2_patches():
+    cheats = _cheat_ranges()
+    for name, d, crc, *_ in _vers():
+        out = elfpatch.set_table(d, [7] * elfpatch.MAX_SONGS)
+        assert _overlaps(elfpatch.touched_ranges(out), cheats.get(crc, [])) == [], name
+
+
 def test_udf_tag_crc():
     _skip(ISO)
     img = iso.IsoImage(ISO)

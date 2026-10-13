@@ -34,7 +34,7 @@ SPLIT = 22
 STRING_IDS = {"title": "EATraxSongTitle_%d", "artist": "EATraxArtist_%d", "album": "EATraxAlbum_%d"}  # 0-based
 MARK = b"MusicKit"     # first 8 bytes of the RWS segment UUID of songs MusicKit encoded
 MAX_TEXT = 60
-MAX_SONGS = elfpatch.MAX_SONGS   # 94: the shuffle order array limit (see elfpatch); also keeps the
+MAX_SONGS = elfpatch.MAX_SONGS   # 94 at most: keeps the
                                  # EATRAX1.RWS header below 0x2000 bytes
 SAVED_SONGS = elfpatch.ORIGINAL_SONGS    # positions whose Song Manager setting is saved on the memory card
 DVD5_SECTORS = 2295104   # single-layer DVD (4,700,372,992 bytes)

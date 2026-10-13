@@ -13,8 +13,17 @@ Facts (Europe addresses; other builds are located by signature):
   territory (table_init: four stores into the table). Those stores follow the songs when they move, and go to an
   unused slot after the table when the song is removed or gets new audio.
 
+- shuffle mode keeps its play order as one byte per song in the music manager object, at +0x0E. There is room for
+  50 songs there: the shuffle position (+0x40), the shuffle song count (+0x44), the stream file name (+0x48..+0x67)
+  and a copy of the playlist struct (+0x68, song count at +0x6C) follow. Two functions use that list
+  (shuffle_fill: refill it, shuffle_next: pick the next song).
+
 The table moves into the 16 KB hole between the two PT_LOAD segments (the unused .sndata section); segment 1 is
-extended over it and the rest of the file shifts by the hole size.
+extended over it and the rest of the file shifts by the hole size. The shuffle order list moves into the same hole,
+SHUFFLE_OFFSET bytes after the table start (after the table and its spare slot): shuffle_fill builds its two list
+pointers with lui (was addiu x,manager,0xe) and accesses the list with %lo(list) offsets; shuffle_next loads
+%hi(list) into t6 (unused there and in shuffle_fill, which it calls) in a branch delay slot and indexes the list
+with it.
 
 PCSX2 identifies games by the XOR of all 32-bit words of the boot ELF (ElfObject::GetCRC) and picks patches /
 widescreen pnach files by it. A compensation word is appended after the last byte of the file (never loaded) so the
@@ -23,11 +32,14 @@ patched ELF keeps the original CRC.
 import struct
 
 ORIGINAL_SONGS = 36
-# Shuffle mode keeps its play order as one byte per song at music manager +0xE (filled at 0x2C3790, read at
-# 0x2C3894). From 95 songs on that array reaches the playlist's song count at manager +0x6C, which can lead to an
-# out-of-range song index in shuffle mode. (51+ songs already touch the shuffle position/count at +0x40/+0x44:
-# harmless, shuffle just picks again.) So 94 songs at most.
 MAX_SONGS = 94
+SHUFFLE_OFFSET = 0x900         # shuffle order list: table start + 0x900 .. + 0x980 (one byte per song)
+SHUFFLE_SIZE = 0x80
+# Music manager fields after the shuffle order list (offsets into the manager object); the list stays there in an
+# executable patched by an older MusicKit version (room for 50 songs) until the disc is saved again.
+MANAGER_SHUFFLE = 0x0E
+MANAGER_FIELDS = [(0x40, 0x44, "shuffle position"), (0x44, 0x48, "shuffle song count"),
+                  (0x48, 0x68, "stream file name"), (0x68, 0xB8, "playlist copy (song count at +0x6C)")]
 _DETECT_MAX = 100
 KNOWN = {0x8C9C76B4: "Europe SLES-54681", 0x8C9576A1: "USA SLUS-21596"}
 
@@ -39,7 +51,11 @@ EU_GROUPS = {
     "toggle": (0x2C3688, 0x2C370C),         # Song Manager toggle
     "song_finished": (0x2C2960, 0x2C29C0),  # song played to the end
     "trax_list": (0x19A800, 0x19A99C),      # Song Manager list: number of rows
+    "shuffle_fill": (0x2C3778, 0x2C3858),   # shuffle: refill the order list
+    "shuffle_next": (0x2C3858, 0x2C38CC),   # shuffle: next song from the order list
 }
+# groups whose random-number state addresses differ between builds: load / store offsets are not compared
+_LOOSE_GROUPS = {"shuffle_fill", "shuffle_next"}
 
 # (EU vaddr, group, template, meaning). Template: int word, None = keep the original word, or a callable(ctx).
 CODE_PATCHES = [
@@ -64,7 +80,20 @@ CODE_PATCHES = [
     (0x2C29AC, "song_finished", None, "andi v0,v0,0xf7"),
     (0x2C29B0, "song_finished", None, "jal <stop stream>"),
     (0x2C29B4, "song_finished", lambda c: 0xA0620000 | c["prof_lo"], "sb v0,%lo(profile)(v1)"),
+    # shuffle order list moved out of the music manager (manager + 0xe)
+    (0x2C3790, "shuffle_fill", lambda c: 0x3C040000 | c["shuf_hi"], "lui a0,%hi(shuffle)  (was addiu a0,t4,0xe)"),
+    (0x2C3798, "shuffle_fill", lambda c: 0xA0430000 | c["shuf_lo"], "sb v1,%lo(shuffle)(v0)  (was 0(v0))"),
+    (0x2C37B0, "shuffle_fill", lambda c: 0x3C090000 | c["shuf_hi"], "lui t1,%hi(shuffle)  (was addiu t1,t4,0xe)"),
+    (0x2C37F4, "shuffle_fill", lambda c: 0x90E50000 | c["shuf_lo"], "lbu a1,%lo(shuffle)(a3)"),
+    (0x2C3808, "shuffle_fill", lambda c: 0x90820000 | c["shuf_lo"], "lbu v0,%lo(shuffle)(a0)"),
+    (0x2C3810, "shuffle_fill", lambda c: 0xA0850000 | c["shuf_lo"], "sb a1,%lo(shuffle)(a0)"),
+    (0x2C3814, "shuffle_fill", lambda c: 0xA0E20000 | c["shuf_lo"], "sb v0,%lo(shuffle)(a3)"),
+    (0x2C3874, "shuffle_next", 0x10450003, "beq v0,a1,+3  (was beql v0,a1,+4 with lw v0,0x40(s0) in the slot)"),
+    (0x2C3878, "shuffle_next", lambda c: 0x3C0E0000 | c["shuf_hi"], "lui t6,%hi(shuffle)  (delay slot)"),
+    (0x2C388C, "shuffle_next", 0x01C22021, "addu a0,t6,v0  (was addu a0,s0,v0)"),
+    (0x2C3894, "shuffle_next", lambda c: 0x90910000 | c["shuf_lo"], "lbu s1,%lo(shuffle)(a0)  (was 0xe(a0))"),
 ]
+SHUFFLE_SITES = {eu for eu, g, _, _ in CODE_PATCHES if g in _LOOSE_GROUPS}
 # Words that depend on the song list (rewritten by patch / set_table / extend): Song Manager rows ...
 ROW_SITES = [(0x19A80C, 0x24070000, "addiu a3,zero,rows"), (0x19A824, 0x24060000, "addiu a2,zero,rows"),
              (0x19A994, 0x2A220000, "slti v0,s1,rows")]
@@ -166,6 +195,9 @@ class Layout:
         self.table_new = sndata[0][3] if sndata else (self.hole_start + 15) & ~15
         if not self.patched and self.hole_end - self.table_new < (SINK + 1) * 12:
             raise ValueError("no room for the song table in this executable")
+        self.shuffle = self.table_new + SHUFFLE_OFFSET          # moved shuffle order list
+        if self.shuffle + SHUFFLE_SIZE > self.hole_end:
+            raise ValueError("no room for the shuffle order list in this executable")
         # code sites
         self.delta = {}
         for g, (a, b) in EU_GROUPS.items():
@@ -205,7 +237,8 @@ class Layout:
         return hits[0]
 
     def ctx(self):
-        return {"tbl_hi": hi16(self.table_new), "tbl_lo": self.table_new & 0xFFFF, "prof_lo": self.prof_lo}
+        return {"tbl_hi": hi16(self.table_new), "tbl_lo": self.table_new & 0xFFFF, "prof_lo": self.prof_lo,
+                "shuf_hi": hi16(self.shuffle), "shuf_lo": self.shuffle & 0xFFFF}
 
     def sites(self):
         """[(vaddr, EU vaddr, template, meaning)] for this build."""
@@ -281,8 +314,37 @@ def set_table(data, flags, default_off=None):
         e.d[o:o + 12] = struct.pack("<3I", *entry)
     e.w32(lay.playlist + 4, total)
     _write_variable(lay, total, default_off)
+    o = e.file_offset(lay.shuffle)
+    e.d[o:o + SHUFFLE_SIZE] = bytes(SHUFFLE_SIZE)       # the game fills the shuffle order list itself
+    # executables patched by older MusicKit versions kept the shuffle order list in the music manager (room for
+    # 50 songs only): writing all patch words again moves it
+    _write_sites(e, lay)
     appended = len(e.d) > e.content_end()
     return _fix_crc(e.d, target_crc, appended)
+
+
+def _write_sites(e, lay):
+    """Write every code patch word (the same words again on an executable that already has them)."""
+    c = lay.ctx()
+    for va, eu, tmpl, _ in lay.sites():
+        if tmpl is not None:
+            e.w32(va, tmpl(c) if callable(tmpl) else tmpl)
+
+
+def shuffle_list(data):
+    """Where the game keeps the shuffle order list: ("hole", address) once moved into the .sndata hole, else
+    ("manager", MANAGER_SHUFFLE) (offset into the music manager object, room up to the shuffle position)."""
+    lay = Layout(data)
+    if lay.patched:
+        c = lay.ctx()
+        if all(lay.elf.r32(va) == (t(c) if callable(t) else t) for va, eu, t, _ in lay.sites() if eu in SHUFFLE_SITES):
+            return "hole", lay.shuffle
+    return "manager", MANAGER_SHUFFLE
+
+
+def manager_overlap(start, count):
+    """Music manager fields a per-song byte list at manager offset `start` with `count` songs runs into."""
+    return [name for lo, hi, name in MANAGER_FIELDS if start < hi and lo < start + count]
 
 
 def _write_variable(lay, total, default_off):
@@ -389,6 +451,7 @@ def extend(data, total_songs, new_flags=7):
         e.d[o:o + 12] = struct.pack("<3I", i, 0, new_flags)
     e.w32(lay.playlist + 4, total_songs)
     _write_variable(lay, total_songs, default_off)
+    _write_sites(e, lay)
     appended = len(e.d) > e.content_end()
     return _fix_crc(e.d, target_crc, appended)
 
@@ -420,9 +483,13 @@ def gen_signatures(eu_data, path=None):
     global EU_SIGNATURES, PATCHED_SIGNATURES
     e = Elf(eu_data)
 
+    loose = {va for g in _LOOSE_GROUPS for va in range(*EU_GROUPS[g], 4)}
+
     def sig(w, va, m=None):
         m = _mask_of(w) if m is None else m
         if va in _VARIABLE:                # immediates that depend on the song list
+            m &= 0xFFFF0000
+        if va in loose and 0x20 <= w >> 26 <= 0x3F:
             m &= 0xFFFF0000
         return [w & m, m]
     orig = {g: [sig(e.r32(va), va) for va in range(a, b, 4)] for g, (a, b) in EU_GROUPS.items()}
