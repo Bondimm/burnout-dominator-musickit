@@ -140,7 +140,6 @@ saving) and save again — it is saved into itself. Your ISO is never changed.
    - Europe (SLES-54681): `SLES-54681_8C9C76B4_hostfs.pnach`
    - Europe (SLES-54627): `SLES-54627_8C9576B4_hostfs.pnach`
    - USA (SLUS-21596): `SLUS-21596_8C9576A1_hostfs.pnach`
-   - Asia (SLAJ-25094): `SLAJ-25094_DDBB03C2_hostfs.pnach`
 
    Put it into PCSX2's `cheats` folder (PCSX2: *Tools → Open Data Directory*).
 2. Add your folder to PCSX2's game list (*Settings → Game List → Add...*, without recursive scan). The game appears
